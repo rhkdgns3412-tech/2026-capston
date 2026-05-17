@@ -6,6 +6,9 @@
 #include "MAX30105.h"
 #include <BH1750.h>
 
+static const uint8_t MAX30205_ADDR = 0x48;
+static const uint8_t MAX30205_TEMP_REG = 0x00;
+
 Adafruit_BME280 bme;
 MPU6050 mpu;
 MAX30105 max30102;
@@ -15,6 +18,7 @@ bool bmeReady = false;
 bool mpuReady = false;
 bool maxReady = false;
 bool bhReady = false;
+bool max30205Ready = false;
 
 #define BME_TEMP_OFFSET   0.0
 #define BME_HUM_OFFSET    0.0
@@ -30,6 +34,7 @@ void initBME280();
 void initMPU6050();
 void initMAX30102();
 void initBH1750();
+void initMAX30205();
 
 void calibrateMPU6050();
 void calibrateMAX30102();
@@ -38,6 +43,7 @@ void readBME280(SensorData &data);
 void readMPU6050(SensorData &data);
 void readMAX30102(SensorData &data);
 void readBH1750(SensorData &data);
+void readMAX30205(SensorData &data);
 
 void initSensors() {
   Wire.begin(SDA, SCL);
@@ -50,6 +56,7 @@ void initSensors() {
 
 
   initMAX30102();
+  initMAX30205();
   initBH1750();
 }
 
@@ -61,6 +68,7 @@ void readSensors(SensorData &data) {
 
 
   readMAX30102(data);
+  readMAX30205(data);
   readBH1750(data);
 }
 
@@ -111,6 +119,18 @@ void initBH1750() {
 
   bhReady = true;
   Serial.println("BH1750 시작");
+}
+
+void initMAX30205() {
+  Wire.beginTransmission(MAX30205_ADDR);
+  if (Wire.endTransmission() != 0) {
+    max30205Ready = false;
+    Serial.println("MAX30205 연결 실패");
+    return;
+  }
+
+  max30205Ready = true;
+  Serial.println("MAX30205 시작");
 }
 
 void calibrateMPU6050() {
@@ -211,9 +231,32 @@ void readBH1750(SensorData &data) {
   data.lux = lightMeter.readLightLevel();
 }
 
-void updateDerivedData(SensorData &data) {
-  data.bodyTemp = 36.5;
+void readMAX30205(SensorData &data) {
+  if (!max30205Ready) {
+    data.bodyTemp = 0;
+    return;
+  }
 
+  Wire.beginTransmission(MAX30205_ADDR);
+  Wire.write(MAX30205_TEMP_REG);
+  if (Wire.endTransmission() != 0) {
+    data.bodyTemp = 0;
+    return;
+  }
+
+  if (Wire.requestFrom((int)MAX30205_ADDR, 2) < 2) {
+    data.bodyTemp = 0;
+    return;
+  }
+
+  uint8_t msb = Wire.read();
+  uint8_t lsb = Wire.read();
+  int16_t rawTemp = (int16_t)((msb << 8) | lsb);
+
+  data.bodyTemp = rawTemp * 0.00390625f;
+}
+
+void updateDerivedData(SensorData &data) {
   if (data.fingerDetected) {
     data.heartRate = 80;
     data.spo2 = 98;
@@ -270,4 +313,8 @@ void printSensorData(const SensorData &data) {
   Serial.print("Light: ");
   Serial.print(data.lux);
   Serial.println(" lx");
+
+  Serial.print("Body Temp: ");
+  Serial.print(data.bodyTemp);
+  Serial.println(" C");
 }
