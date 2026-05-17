@@ -4,6 +4,7 @@
 #include <Adafruit_BME280.h>
 #include <MPU6050.h>
 #include "MAX30105.h"
+#include "spo2_algorithm.h"
 #include <BH1750.h>
 
 static const uint8_t MAX30205_ADDR = 0x48;
@@ -19,6 +20,20 @@ bool mpuReady = false;
 bool maxReady = false;
 bool bhReady = false;
 bool max30205Ready = false;
+
+static const uint16_t MAX30102_SAMPLE_INTERVAL_MS = 40;
+static const uint16_t MAX30102_RECALC_SAMPLES = 25;
+
+static uint32_t irBuffer[BUFFER_SIZE];
+static uint32_t redBuffer[BUFFER_SIZE];
+static uint16_t max30102BufferIndex = 0;
+static uint16_t max30102SamplesFilled = 0;
+static uint16_t max30102SamplesSinceCalc = 0;
+static unsigned long lastMAX30102SampleMillis = 0;
+static int32_t max30102HeartRate = 0;
+static int32_t max30102SpO2 = 0;
+static int8_t max30102ValidHeartRate = 0;
+static int8_t max30102ValidSpO2 = 0;
 
 #define BME_TEMP_OFFSET   0.0
 #define BME_HUM_OFFSET    0.0
@@ -103,7 +118,8 @@ void initMAX30102() {
     return;
   }
 
-  max30102.setup();
+  max30102.setup(60, 4, 2, 100, 411, 4096);
+  max30102.clearFIFO();
   maxReady = true;
 
   Serial.println("MAX30102 시작");
@@ -165,19 +181,21 @@ void calibrateMPU6050() {
 void calibrateMAX30102() {
   if (!maxReady) return;
 
-  long irSum = 0;
-  long redSum = 0;
-
-  for (int i = 0; i < 50; i++) {
-    irSum += max30102.getIR();
-    redSum += max30102.getRed();
-    delay(20);
+  for (int i = 0; i < BUFFER_SIZE; i++) {
+    irBuffer[i] = 0;
+    redBuffer[i] = 0;
   }
 
-  irBase = irSum / 50;
-  redBase = redSum / 50;
+  max30102BufferIndex = 0;
+  max30102SamplesFilled = 0;
+  max30102SamplesSinceCalc = 0;
+  lastMAX30102SampleMillis = millis();
+  max30102HeartRate = 0;
+  max30102SpO2 = 0;
+  max30102ValidHeartRate = 0;
+  max30102ValidSpO2 = 0;
 
-  Serial.println("MAX30102 기준값 설정 완료");
+  Serial.println("MAX30102 버퍼 초기화 완료");
 }
 
 void readBME280(SensorData &data) {
@@ -213,13 +231,89 @@ void readMAX30102(SensorData &data) {
     data.irValue = 0;
     data.redValue = 0;
     data.fingerDetected = false;
+    data.heartRate = 0;
+    data.spo2 = 0;
     return;
   }
 
-  data.irValue = max30102.getIR();
-  data.redValue = max30102.getRed();
+  unsigned long currentMillis = millis();
 
+  while ((currentMillis - lastMAX30102SampleMillis) >= MAX30102_SAMPLE_INTERVAL_MS) {
+    while (max30102.available() == false) {
+      max30102.check();
+    }
+
+    uint32_t redSample = max30102.getRed();
+    uint32_t irSample = max30102.getIR();
+    max30102.nextSample();
+
+    redBuffer[max30102BufferIndex] = redSample;
+    irBuffer[max30102BufferIndex] = irSample;
+
+    max30102BufferIndex++;
+    if (max30102BufferIndex >= BUFFER_SIZE) {
+      max30102BufferIndex = 0;
+    }
+
+    if (max30102SamplesFilled < BUFFER_SIZE) {
+      max30102SamplesFilled++;
+    }
+
+    if (max30102SamplesSinceCalc < MAX30102_RECALC_SAMPLES) {
+      max30102SamplesSinceCalc++;
+    }
+
+    lastMAX30102SampleMillis += MAX30102_SAMPLE_INTERVAL_MS;
+    currentMillis = millis();
+  }
+
+  if (max30102SamplesFilled < BUFFER_SIZE) {
+    data.irValue = irBuffer[(max30102BufferIndex + BUFFER_SIZE - 1) % BUFFER_SIZE];
+    data.redValue = redBuffer[(max30102BufferIndex + BUFFER_SIZE - 1) % BUFFER_SIZE];
+    data.fingerDetected = (data.irValue > 50000);
+    data.heartRate = 0;
+    data.spo2 = 0;
+    return;
+  }
+
+  if (max30102SamplesSinceCalc >= MAX30102_RECALC_SAMPLES) {
+    uint32_t orderedIR[BUFFER_SIZE];
+    uint32_t orderedRed[BUFFER_SIZE];
+
+    for (int i = 0; i < BUFFER_SIZE; i++) {
+      uint16_t index = (max30102BufferIndex + i) % BUFFER_SIZE;
+      orderedIR[i] = irBuffer[index];
+      orderedRed[i] = redBuffer[index];
+    }
+
+    maxim_heart_rate_and_oxygen_saturation(
+      orderedIR,
+      BUFFER_SIZE,
+      orderedRed,
+      &max30102SpO2,
+      &max30102ValidSpO2,
+      &max30102HeartRate,
+      &max30102ValidHeartRate
+    );
+
+    max30102SamplesSinceCalc = 0;
+  }
+
+  data.irValue = irBuffer[(max30102BufferIndex + BUFFER_SIZE - 1) % BUFFER_SIZE];
+  data.redValue = redBuffer[(max30102BufferIndex + BUFFER_SIZE - 1) % BUFFER_SIZE];
   data.fingerDetected = (data.irValue > 50000);
+
+  if (max30102ValidHeartRate) {
+    data.heartRate = max30102HeartRate;
+  } else {
+    data.heartRate = 0;
+  }
+
+  if (max30102ValidSpO2) {
+    data.spo2 = max30102SpO2;
+  } else {
+    data.spo2 = 0;
+  }
 }
 
 void readBH1750(SensorData &data) {
@@ -258,27 +352,24 @@ void readMAX30205(SensorData &data) {
 
 void updateDerivedData(SensorData &data) {
   if (data.fingerDetected) {
-    data.heartRate = 80;
-    data.spo2 = 98;
+    if (data.heartRate < 0) {
+      data.heartRate = 0;
+    }
+    if (data.spo2 < 0) {
+      data.spo2 = 0;
+    }
   } else {
     data.heartRate = 0;
     data.spo2 = 0;
   }
 
-
-    long accPower = abs(data.ax) + abs(data.ay) + abs(data.az);
+  long accPower = abs(data.ax) + abs(data.ay) + abs(data.az);
 
   if (accPower > 30000) {
     data.posture = "UNSTABLE";
   } else {
     data.posture = "NORMAL";
   }
-
-  data.posture = "NORMAL";
-
-
-  if (data.heartRate < 30) data.heartRate = 30;
-  if (data.spo2 < 50) data.spo2 = 50;
 }
 
 void printSensorData(const SensorData &data) {

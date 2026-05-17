@@ -4,9 +4,13 @@
 
 SensorData sensorData;
 
-unsigned long previousMillis = 0;
-//측정주기
-#define MEASURE_INTERVAL 500
+unsigned long previousSensorMillis = 0;
+unsigned long previousReportMillis = 0;
+
+// 센서 샘플링 주기: MAX30102 알고리즘이 동작할 수 있도록 25Hz 근처로 유지
+#define SENSOR_INTERVAL 40
+// 출력/BLE 전송 주기
+#define REPORT_INTERVAL 500
 
 void setup() {
   Serial.begin(115200);
@@ -22,13 +26,18 @@ void setup() {
 void loop() {
   unsigned long currentMillis = millis();
 
-  if (currentMillis - previousMillis >= MEASURE_INTERVAL) {
-    previousMillis = currentMillis;
+  if (currentMillis - previousSensorMillis >= SENSOR_INTERVAL) {
+    previousSensorMillis = currentMillis;
 
     readSensors(sensorData);
     updateDerivedData(sensorData);
 
     controlActuators(sensorData);
+  }
+
+  if (currentMillis - previousReportMillis >= REPORT_INTERVAL) {
+    previousReportMillis = currentMillis;
+
     printSensorData(sensorData);
     sendBLEData(sensorData);
   }
