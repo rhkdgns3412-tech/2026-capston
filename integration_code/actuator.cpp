@@ -40,20 +40,20 @@ void controlLED(float lux) {
     digitalWrite(LED_RED, HIGH);      // RED off
     digitalWrite(LED_GREEN, LOW);     // GREEN on
     digitalWrite(LED_BLUE, HIGH);     // BLUE off
-    Serial.println("LED Stage 1: GREEN");
+
   }
   else if (lux < LIGHT_STAGE2_THRESHOLD) {
     // Stage 2: 250-500 lux - RED and GREEN ON
     digitalWrite(LED_RED, LOW);       // RED on
     digitalWrite(LED_GREEN, LOW);     // GREEN on
     digitalWrite(LED_BLUE, HIGH);     // BLUE off
-    Serial.println("LED Stage 2: RED + GREEN");
+
   }
   else {
     // Stage 3: 500+ lux - RED only ON
     digitalWrite(LED_RED, LOW);       // RED on
     digitalWrite(LED_GREEN, HIGH);    // GREEN off
     digitalWrite(LED_BLUE, HIGH);     // BLUE off
-    Serial.println("LED Stage 3: RED");
+
   }
 }

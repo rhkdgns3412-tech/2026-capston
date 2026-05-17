@@ -37,3 +37,5 @@ void readSensors(SensorData &data);
 void updateDerivedData(SensorData &data);
 void printSensorData(const SensorData &data);
 
+#endif
+
