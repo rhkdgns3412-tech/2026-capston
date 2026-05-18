@@ -5,6 +5,7 @@
 
 #define SDA 21
 #define SCL 22
+#define BUFFER_SIZE 100  // MAX30102 버퍼 크기
 
 
 

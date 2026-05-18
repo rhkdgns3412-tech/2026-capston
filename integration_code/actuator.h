@@ -4,7 +4,7 @@
 
 #include "sensors.h"
 
-#define MOTOR_PIN 26
+#define MOTOR_PIN 27
 #define LIGHT_THRESHOLD 450.0
 
 // LED GPIO Pins (Active Low)
