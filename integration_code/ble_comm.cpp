@@ -1,4 +1,5 @@
 #include "ble_comm.h"
+#include "danger.h"
 
 #include <BLEDevice.h>
 #include <BLEServer.h>
@@ -73,24 +74,35 @@ void initBLE() {
 }
 
 String makeBLEPayload(const SensorData &data) {
+  // Produce a simple CSV line (no headers):
+  // ID,TEMP,TEMP_VALID,TEMP_SOURCE,HR,SPO2,ENV,HUM,LUX,AX,AY,AZ,POSTURE\n
   String payload = "";
 
-  payload += "ID:0001";
-  payload += ",TEMP:";
+  payload += "0001"; // device ID
+  payload += ",";
   payload += String(data.bodyTemp, 1);
-  payload += ",HR:";
+  payload += ",";
+  payload += String((data.bodyTemp > 0.0f) ? 1 : 0);
+  payload += ",";
+  payload += ((data.bodyTemp > 0.0f) ? "MAX30205" : "NONE");
+  payload += ",";
   payload += String(data.heartRate);
-  payload += ",SPO2:";
+  payload += ",";
   payload += String(data.spo2);
-  payload += ",ENV:";
+  payload += ",";
   payload += String(data.temperature, 1);
-  payload += ",HUM:";
+  payload += ",";
   payload += String((int)data.humidity);
-  payload += ",LUX:";
+  payload += ",";
   payload += String((int)data.lux);
-  payload += ",POSTURE:";
+  payload += ",";
+  payload += String(data.ax);
+  payload += ",";
+  payload += String(data.ay);
+  payload += ",";
+  payload += String(data.az);
+  payload += ",";
   payload += data.posture;
-
   payload += "\n";
 
   return payload;
@@ -101,7 +113,7 @@ void sendBLEData(const SensorData &data) {
 
   String payload = makeBLEPayload(data);
 
-  if (payload.length() > 100) {
+  if (payload.length() > 128) {
     Serial.print("BLE 패킷 길이 초과: ");
     Serial.println(payload.length());
     return;

@@ -5,6 +5,7 @@
 #include <MPU6050.h>
 #include "MAX30105.h"
 #include "spo2_algorithm.h"
+#include "hr_spo2.h"
 #include <BH1750.h>
 
 static const uint8_t MAX30205_ADDR = 0x48;
@@ -22,22 +23,24 @@ bool bhReady = false;
 bool max30205Ready = false;
 
 static const uint16_t MAX30102_SAMPLE_INTERVAL_MS = 40;
-static const uint16_t MAX30102_RECALC_SAMPLES = 25;
+static const uint16_t MAX30102_MIN_VALID_SAMPLES = 5;
 
 static uint32_t irBuffer[BUFFER_SIZE];
 static uint32_t redBuffer[BUFFER_SIZE];
 static uint16_t max30102BufferIndex = 0;
 static uint16_t max30102SamplesFilled = 0;
-static uint16_t max30102SamplesSinceCalc = 0;
 static unsigned long lastMAX30102SampleMillis = 0;
 static int32_t max30102HeartRate = 0;
 static int32_t max30102SpO2 = 0;
 static int8_t max30102ValidHeartRate = 0;
 static int8_t max30102ValidSpO2 = 0;
 
-#define BME_TEMP_OFFSET   0.0
-#define BME_HUM_OFFSET    0.0
+#define BME_TEMP_OFFSET   -6.0
+#define BME_HUM_OFFSET    40.0
 #define BME_PRESS_OFFSET  0.0
+
+// MAX30205 보정 오프셋: 체온을 약 +1.2°C 보정
+#define MAX30205_TEMP_OFFSET 1.7f
 
 int16_t axOffset = 0, ayOffset = 0, azOffset = 0;
 int16_t gxOffset = 0, gyOffset = 0, gzOffset = 0;
@@ -67,7 +70,7 @@ void initSensors() {
   delay(500);
   
   Serial.println("\n=== 센서 초기화 시작 ===");
-  Serial.println("주의: 40cm 점퍼선 사용 중 - Pull-up 저항 4.7kΩ 확인 필요");
+
 
   initBME280();
   delay(300);
@@ -127,7 +130,7 @@ void initMAX30102() {
   // 재연결 시도 (최대 3회)
   for (int attempt = 0; attempt < 3; attempt++) {
     if (max30102.begin(Wire, I2C_SPEED_STANDARD)) {
-      max30102.setup(60, 4, 2, 100, 411, 4096);
+      max30102.setup(15, 4, 2, 25, 411, 4096);
       max30102.clearFIFO();
       maxReady = true;
       Serial.print("MAX30102 시작 (시도 ");
@@ -240,7 +243,6 @@ void calibrateMAX30102() {
 
   max30102BufferIndex = 0;
   max30102SamplesFilled = 0;
-  max30102SamplesSinceCalc = 0;
   lastMAX30102SampleMillis = millis();
   max30102HeartRate = 0;
   max30102SpO2 = 0;
@@ -260,6 +262,9 @@ void readBME280(SensorData &data) {
 
   data.temperature = bme.readTemperature() + BME_TEMP_OFFSET;
   data.humidity = bme.readHumidity() + BME_HUM_OFFSET;
+  // 습도는 0~100% 범위로 제한
+  if (data.humidity > 100.0f) data.humidity = 100.0f;
+  if (data.humidity < 0.0f) data.humidity = 0.0f;
   data.pressure = (bme.readPressure() / 100.0) + BME_PRESS_OFFSET;
 }
 
@@ -306,9 +311,6 @@ void readMAX30102(SensorData &data) {
       max30102SamplesFilled++;
     }
 
-    if (max30102SamplesSinceCalc < MAX30102_RECALC_SAMPLES) {
-      max30102SamplesSinceCalc++;
-    }
   } else {
     max30102.check();
   }
@@ -319,30 +321,23 @@ void readMAX30102(SensorData &data) {
   data.redValue = redBuffer[lastIndex];
   data.fingerDetected = (data.irValue > 50000);
 
-  // 버퍼가 충분히 찼을 때만 SpO2/심박 계산
-  if (max30102SamplesFilled >= BUFFER_SIZE) {
-    if (max30102SamplesSinceCalc >= MAX30102_RECALC_SAMPLES) {
-      uint32_t orderedIR[BUFFER_SIZE];
-      uint32_t orderedRed[BUFFER_SIZE];
+  // 샘플이 충분하면 매 갱신마다 HR/SpO2 재계산
+  if (max30102SamplesFilled >= MAX30102_MIN_VALID_SAMPLES) {
+    uint16_t calcLen = (max30102SamplesFilled < BUFFER_SIZE) ? max30102SamplesFilled : BUFFER_SIZE;
+    uint32_t orderedIR[BUFFER_SIZE];
+    uint32_t orderedRed[BUFFER_SIZE];
 
-      for (int i = 0; i < BUFFER_SIZE; i++) {
-        uint16_t index = (max30102BufferIndex + i) % BUFFER_SIZE;
-        orderedIR[i] = irBuffer[index];
-        orderedRed[i] = redBuffer[index];
-      }
-
-      maxim_heart_rate_and_oxygen_saturation(
-        orderedIR,
-        BUFFER_SIZE,
-        orderedRed,
-        &max30102SpO2,
-        &max30102ValidSpO2,
-        &max30102HeartRate,
-        &max30102ValidHeartRate
-      );
-
-      max30102SamplesSinceCalc = 0;
+    uint16_t startIndex = (max30102SamplesFilled < BUFFER_SIZE) ? 0 : max30102BufferIndex;
+    for (uint16_t i = 0; i < calcLen; i++) {
+      uint16_t index = (startIndex + i) % BUFFER_SIZE;
+      orderedIR[i] = irBuffer[index];
+      orderedRed[i] = redBuffer[index];
     }
+
+    // 자체 구현한 간단한 HR/SpO2 계산 호출
+    computeHRandSpO2(orderedIR, orderedRed, calcLen,
+                     &max30102HeartRate, &max30102SpO2,
+                     &max30102ValidHeartRate, &max30102ValidSpO2);
   }
 
   if (max30102ValidHeartRate && data.fingerDetected) {
@@ -397,8 +392,8 @@ void readMAX30205(SensorData &data) {
   // 예: 37.5°C => MSB=37(0x25), LSB=128(0x80)
   int16_t rawTemp = (int16_t)((msb << 8) | lsb);
   
-  // 오른쪽으로 4비트 시프트 (하위 4비트만 온도 데이터)
-  data.bodyTemp = (rawTemp >> 4) * 0.0625f;
+
+  data.bodyTemp = rawTemp / 256.0f+MAX30205_TEMP_OFFSET;
 }
 
 void updateDerivedData(SensorData &data) {
@@ -448,6 +443,12 @@ void printSensorData(const SensorData &data) {
   Serial.print(data.irValue);
   Serial.print(" | RED: ");
   Serial.print(data.redValue);
+
+  Serial.print(" | HR: ");
+  Serial.print(data.heartRate);
+
+  Serial.print(" | SPO2: ");
+  Serial.print(data.spo2);
 
   if (data.fingerDetected) Serial.println(" | 접촉 OK");
   else Serial.println(" | 접촉 불량");

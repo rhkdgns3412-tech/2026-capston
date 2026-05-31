@@ -12,13 +12,16 @@
 #define LED_GREEN 18
 #define LED_BLUE 17
 
-// Light level thresholds for 3-stage LED control
-#define LIGHT_STAGE1_THRESHOLD 250.0   // Stage 1: 0-250 lux (GREEN only)
-#define LIGHT_STAGE2_THRESHOLD 500.0   // Stage 2: 250-500 lux (GREEN + RED)
-// Stage 3: 500+ lux (RED only)
+// DFPlayer 설정 (ESP32 기본: Serial2 사용). 필요 시 핀을 변경하세요.
+#define DFPLAYER_RX 26
+#define DFPLAYER_TX 25
+
+// 오디오 제어 함수
+void initAudio();
+void playAlertForLevel(int dangerLevel);
 
 void initActuators();
 void controlActuators(const SensorData &data);
-void controlLED(float lux);
+void controlLED(int dangerLevel);
 
 #endif
