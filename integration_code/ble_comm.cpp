@@ -1,5 +1,5 @@
 #include "ble_comm.h"
-#include "danger.h"
+ #include "actuator.h"
 
 #include <BLEDevice.h>
 #include <BLEServer.h>
@@ -41,7 +41,7 @@ class ControlCallbacks : public BLECharacteristicCallbacks {
 
 void initBLE() {
   BLEDevice::init(DEVICE_NAME);
-
+  BLEDevice::setMTU(128);  // 수정
   pServer = BLEDevice::createServer();
   pServer->setCallbacks(new MyServerCallbacks());
 
@@ -52,14 +52,13 @@ void initBLE() {
                           BLECharacteristic::PROPERTY_READ |
                           BLECharacteristic::PROPERTY_NOTIFY
                         );
-
   pDataCharacteristic->addDescriptor(new BLE2902());
 
   pControlCharacteristic = pService->createCharacteristic(
                              CONTROL_CHAR_UUID,
-                             BLECharacteristic::PROPERTY_WRITE
+                             BLECharacteristic::PROPERTY_WRITE |
+                             BLECharacteristic::PROPERTY_WRITE_NR  // 수정
                            );
-
   pControlCharacteristic->setCallbacks(new ControlCallbacks());
 
   pService->start();
@@ -67,42 +66,72 @@ void initBLE() {
   BLEAdvertising *pAdvertising = BLEDevice::getAdvertising();
   pAdvertising->addServiceUUID(SERVICE_UUID);
   pAdvertising->setScanResponse(true);
+  pAdvertising->setMinPreferred(0x06);  // 추가
+  pAdvertising->setMinPreferred(0x12);  // 추가
   pAdvertising->start();
 
   Serial.println("BLE 광고 시작");
   Serial.println(DEVICE_NAME);
 }
 
+
 String makeBLEPayload(const SensorData &data) {
-  // Produce a simple CSV line (no headers):
-  // ID,TEMP,TEMP_VALID,TEMP_SOURCE,HR,SPO2,ENV,HUM,LUX,AX,AY,AZ,POSTURE\n
+  float axG = data.ax / 16384.0f;
+  float ayG = data.ay / 16384.0f;
+  float azG = data.az / 16384.0f;
+
   String payload = "";
 
-  payload += "0001"; // device ID
+  payload += "ID:0001";
   payload += ",";
+
+  payload += "TEMP:";
   payload += String(data.bodyTemp, 1);
   payload += ",";
+
+  payload += "TEMP_VALID:";
   payload += String((data.bodyTemp > 0.0f) ? 1 : 0);
   payload += ",";
-  payload += ((data.bodyTemp > 0.0f) ? "MAX30205" : "NONE");
+
+  payload += "TEMP_SOURCE:";
+  payload += ((data.bodyTemp > 0.0f) ? "M" : "X");
   payload += ",";
+
+  payload += "HR:";
   payload += String(data.heartRate);
   payload += ",";
+
+  payload += "SPO2:";
   payload += String(data.spo2);
   payload += ",";
+
+  payload += "ENV:";
   payload += String(data.temperature, 1);
   payload += ",";
+
+  payload += "HUM:";
   payload += String((int)data.humidity);
   payload += ",";
+
+  payload += "LUX:";
   payload += String((int)data.lux);
   payload += ",";
-  payload += String(data.ax);
+
+  payload += "AX:";
+  payload += String(axG, 2);
   payload += ",";
-  payload += String(data.ay);
+
+  payload += "AY:";
+  payload += String(ayG, 2);
   payload += ",";
-  payload += String(data.az);
+
+  payload += "AZ:";
+  payload += String(azG, 2);
   payload += ",";
+
+  payload += "POSTURE:";
   payload += data.posture;
+
   payload += "\n";
 
   return payload;
@@ -126,9 +155,15 @@ void sendBLEData(const SensorData &data) {
   Serial.print(payload);
 }
 
+// danger.cpp, danger.h 더 이상 위험도 계산 안 함
+// ble_comm.cpp
 void handleControlCommand(String command) {
   command.trim();
-
   Serial.print("앱 제어 명령 수신: ");
   Serial.println(command);
+
+  if (command == "RISK:SAFE")           setDangerLevel(0);
+  else if (command == "RISK:CAUTION")   setDangerLevel(1);
+  else if (command == "RISK:DANGER")    setDangerLevel(2);
+  else if (command == "RISK:EMERGENCY") setDangerLevel(3);
 }
